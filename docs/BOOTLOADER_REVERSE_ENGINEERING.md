@@ -65,3 +65,22 @@ The repository includes the proven, intact bootloader binaries:
 * `clone-uboot/trust.img`: ARM Trusted Firmware (BL31 / OP-TEE).
 * `clone-uboot/uboot_stable.img`: Stable U-Boot built for SD-card booting (`mmc 1`) with native Android boot command support (`bootcmd=boot_android ${devtype} ${devnum};bootrkp;run distro_bootcmd;`).
 * `clone-uboot/uboot_oct05_emmc.img`: Experimental eMMC build preserved for reference.
+
+---
+
+## 4. Partition Scheme Analysis & U-Boot `mmc dev 1` Failure
+
+### Stock LineageOS 18.1 Partition Layout
+Inspection of the GPT partition header in the stock LineageOS image revealed the following 5 partitions:
+1. `BOOT`: Start LBA 32,768, End LBA 1,081,343 (512 MB, FAT32)
+2. `system`: Start LBA 1,081,344, End LBA 5,701,008 (~2,255 MB, EXT4)
+3. `idbloader`: Start LBA 64, End LBA 16,383 (7.96 MB, Rockchip bootloader Stage 1)
+4. `uboot`: Start LBA 16,384, End LBA 24,575 (4 MB, U-Boot Stage 2)
+5. `trust`: Start LBA 24,576, End LBA 32,767 (4 MB, ARM Trusted Firmware BL31)
+
+### Hybrid MBR vs. GPT Interaction
+1. When fusing an MBR table into Sector 0 while leaving the original `EFI PART` GPT header at Sector 1, host operating systems (like Windows) detect conflicting partition styles, setting partitions to `IsOffline: True`.
+2. In U-Boot, `part_efi.c` detects the primary GPT header and attempts to validate the Backup GPT at the end of the physical media.
+3. If the backup GPT is absent or invalid, or if the partition structures do not match U-Boot's device map, U-Boot will halt or fail to mount the device.
+4. Furthermore, function `0x2065e0` executes `mmc dev 1` before parsing partitions. If the card reader controller (`/dwmmc@ff370000`) fails voltage negotiation, clock synchronization, or bus width configuration, U-Boot triggers Error Code 4 (`U-BOOT (spinor)` banner) and shuts down.
+

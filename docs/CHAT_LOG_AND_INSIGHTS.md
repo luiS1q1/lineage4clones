@@ -40,3 +40,29 @@ This document chronicles all insights, experiments, and technical resolutions pr
 * **Feature Added:** Configured `console=tty0 loglevel=7` in `boot.ini` and `boot.ini-android`. When the Linux kernel executes, all kernel messages and driver logs scroll live across the LCD screen for real-time visibility.
 * **Automation:** Created `build_image.py` to allow one-click generation of the complete flashable 3.2 GB image from local files.
 * **Repository State:** Committed all bootloader binaries, DTBs, tools, and documentation to GitHub.
+
+### Phase 6: Rufus Flashing, Partition Mounting, and Boot Test
+* **Flashing Process:** The user wrote `lineage-18.1-r36s-clone-type2-amp.img` to a 32 GB SanDisk MicroSD card using Rufus 4.13.2316 in raw MBR mode (status reported green `FERTIG`).
+* **Windows Drive Mystery Resolved:**
+  * In Windows Explorer, clicking on `USB-Laufwerk (E:)` displayed the prompt: *"Legen Sie einen Datenträger in das USB-Laufwerk (E:) ein."*
+  * Investigation revealed that the USB adapter is a multi-card reader (`Generic Flash-Disk`) with two LUNs:
+    * `Disk 1`: The 32 GB MicroSD card.
+    * `Disk 2`: The empty standard SD card slot (`0 B, No Media`), which Windows permanently assigned as drive letter `E:`.
+  * The actual MicroSD card (`Disk 1`) was present and healthy, but Windows marked Partition 1 (`BOOT`) as `IsOffline: True` without a drive letter because the image contained both MBR partition entries in LBA 0 and an original `EFI PART` GPT header in LBA 1, which Windows rejects as a conflicting partition structure.
+* **Console Boot Test:**
+  * The user inserted the card into slot TF1-OS of the R36S clone console.
+  * **Result:** The screen turned on and displayed the same fallback error banner:
+    ```
+    U-BOOT (spinor) : Sep 01 2026 01:59:58
+    ```
+    Followed ~5 seconds later by `power off...` and shutdown.
+* **Key Insights & Next Focus:**
+  * Even with the stable September 1 U-Boot (`uboot_stable.img`), U-Boot fails during `run_command("mmc dev 1")` before it can execute `bootcmd`.
+  * GPT layout analysis of the stock LineageOS image revealed:
+    * Partition 1: `BOOT` (LBA 32768, 512 MB)
+    * Partition 2: `system` (LBA 1081344, 2255 MB)
+    * Partition 3: `idbloader` (LBA 64, 7 MB)
+    * Partition 4: `uboot` (LBA 16384, 4 MB)
+    * Partition 5: `trust` (LBA 24576, 4 MB)
+  * In the next step, we must investigate why `mmc dev 1` fails in U-Boot on this hardware (e.g. MMC clock/voltage in U-Boot device tree, backup GPT validation requirement, or MMC bus width/mode).
+
