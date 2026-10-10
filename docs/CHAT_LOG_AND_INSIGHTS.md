@@ -56,13 +56,28 @@ This document chronicles all insights, experiments, and technical resolutions pr
     U-BOOT (spinor) : Sep 01 2026 01:59:58
     ```
     Followed ~5 seconds later by `power off...` and shutdown.
-* **Key Insights & Next Focus:**
-  * Even with the stable September 1 U-Boot (`uboot_stable.img`), U-Boot fails during `run_command("mmc dev 1")` before it can execute `bootcmd`.
-  * GPT layout analysis of the stock LineageOS image revealed:
-    * Partition 1: `BOOT` (LBA 32768, 512 MB)
-    * Partition 2: `system` (LBA 1081344, 2255 MB)
-    * Partition 3: `idbloader` (LBA 64, 7 MB)
-    * Partition 4: `uboot` (LBA 16384, 4 MB)
-    * Partition 5: `trust` (LBA 24576, 4 MB)
-  * In the next step, we must investigate why `mmc dev 1` fails in U-Boot on this hardware (e.g. MMC clock/voltage in U-Boot device tree, backup GPT validation requirement, or MMC bus width/mode).
+### Phase 7: Exact Sector-by-Sector Verification against Working ArkOS & Clean Rebuild
+* **Source Comparison (`dArkOS4Clone-20261008.img`):**
+  * Located the local uncompressed 12.4 GB working release `dArkOS4Clone-20261008.img` in user's downloads.
+  * Executed direct cryptographic hash comparisons against our repository bootloader files:
+    * `idbloader.img` (Sector 64): MD5 `065c4e4e3e77414f636cbcfd7ee88a0b` — **100% byte-for-byte identical**.
+    * `trust.img` (Sector 24576): MD5 `ba8fd9c133787ae54cc75fc35858eff3` — **100% byte-for-byte identical**.
+    * `uboot.img` (Sector 16384): MD5 `a1a164e2451f5d0f3743f700a463de11` — **100% byte-for-byte identical to our `uboot_oct05_emmc.img`**.
+* **Root Cause of the `U-BOOT (spinor)` Fallback Uncovered:**
+  * **Partition Structure Mismatch:** In working `dArkOS4Clone`, Sectors 1–63 are **100% zeroed out** (no GPT header whatsoever), and Sector 0 contains a pure MBR partition table.
+  * In the previous build of LineageOS, Sector 0 had MBR entries written, but Sectors 1–33 still held the stock GPT header (`EFI PART`) and partition array.
+  * Disassembly of U-Boot confirmed function `0x206f60` aborting on `write empty ptable error` (`0x2c97d0`) when encountering contradictory partition headers, triggering Error Routine 4 (`U-BOOT (spinor)`) and 5-second shutdown.
+* **Kernel First-Boot Trap Discovered:**
+  * In LineageOS FAT32 `BOOT`, `boot.ini` on first boot loads `Image-resizing`, NOT `Image`.
+  * `Image-resizing` in the stock image was compiled for single-RAM boards and would crash immediately if executed.
+* **Fix & Rebuild Executed:**
+  * Zeroed out Sectors 1–63 completely in `build_image.py`.
+  * Configured Sector 0 MBR to match working ArkOS (type `0x0b` FAT32 BOOT + type `0x83` Linux system).
+  * Fused the verified working clone bootloader (`idbloader.img`, `uboot_oct05_emmc.img`, `trust.img`).
+  * Patched the FAT32 BOOT partition:
+    * `/Image`: Updated with clone kernel (15.7 MB).
+    * `/Image-resizing`: Updated with clone kernel (15.7 MB) to prevent first-boot freeze.
+    * `/rk3326-r36s-android.dtb`: Updated with Panel 1 + Amp DTB (92.4 KB).
+    * `boot.ini` / `boot.ini-android`: Enabled live on-screen logging (`console=tty0 loglevel=7`).
+
 

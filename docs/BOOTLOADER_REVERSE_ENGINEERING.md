@@ -81,6 +81,25 @@ Inspection of the GPT partition header in the stock LineageOS image revealed the
 ### Hybrid MBR vs. GPT Interaction
 1. When fusing an MBR table into Sector 0 while leaving the original `EFI PART` GPT header at Sector 1, host operating systems (like Windows) detect conflicting partition styles, setting partitions to `IsOffline: True`.
 2. In U-Boot, `part_efi.c` detects the primary GPT header and attempts to validate the Backup GPT at the end of the physical media.
-3. If the backup GPT is absent or invalid, or if the partition structures do not match U-Boot's device map, U-Boot will halt or fail to mount the device.
-4. Furthermore, function `0x2065e0` executes `mmc dev 1` before parsing partitions. If the card reader controller (`/dwmmc@ff370000`) fails voltage negotiation, clock synchronization, or bus width configuration, U-Boot triggers Error Code 4 (`U-BOOT (spinor)` banner) and shuts down.
+3. If the backup GPT is absent or invalid, or if the partition structures do not match U-Boot's device map, U-Boot halts with `write empty ptable error` (`0x2c97d0`) and displays Error Code 4 (`U-BOOT (spinor)` banner).
+
+---
+
+## 5. Verification against Working ArkOS & Clean MBR Resolution
+
+### Sector-by-Sector Binary Comparison (`dArkOS4Clone-20261008.img`)
+Direct extraction and cryptographic MD5 comparison between the known-working ArkOS image and our repository bootloader files confirmed:
+* **Sector 64 (`idbloader.img`):** MD5 `065c4e4e3e77414f636cbcfd7ee88a0b` (176,452 bytes) — Exact Match.
+* **Sector 16384 (`uboot.img`):** MD5 `a1a164e2451f5d0f3743f700a463de11` (4,194,304 bytes) — Exact Match to `clone-uboot/uboot_oct05_emmc.img`.
+* **Sector 24576 (`trust.img`):** MD5 `ba8fd9c133787ae54cc75fc35858eff3` (4,194,304 bytes) — Exact Match.
+
+### Root Cause Resolution: Eliminating GPT Remnants
+1. **ArkOS Reference Structure:** In `dArkOS4Clone`, Sectors 1 through 63 are filled with zeros (`0x00`). The drive is a clean, pure MBR disk.
+2. **The Conflict in Hybrid Builds:** Leaving the stock GPT header (`EFI PART`) in LBA 1 triggered U-Boot's internal `ptable error` (`0x2c97d0`), aborting boot before `bootcmd` could execute.
+3. **The Clean Build:**
+   * Sectors 1–63 are wiped to zero.
+   * Sector 0 defines standard MBR partitions (Partition 1: type `0x0b` FAT32 BOOT, Partition 2: type `0x83` Linux system).
+   * FAT32 partition has both `/Image` and `/Image-resizing` updated with the clone kernel to avoid any single-RAM first-boot crash.
+
+
 

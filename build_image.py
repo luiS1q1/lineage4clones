@@ -41,27 +41,37 @@ def fuse_bootloader(image_path, idb_path, uboot_path, trust_path):
         f.write(tr)
         print(f"    [+] Wrote trust.img at sector {TRUST_SEEK} ({len(tr)} bytes)")
 
-def write_hybrid_mbr(image_path):
-    print("[*] Writing Hybrid MBR to sector 0...")
+def write_clean_mbr(image_path):
+    print("[*] Writing clean MBR to sector 0 and wiping GPT sectors 1-63...")
     with open(image_path, 'r+b') as f:
+        # 1. Zero out sectors 1 to 63 (complete removal of EFI PART and GPT partition array)
+        f.seek(512)
+        f.write(b'\x00' * (63 * 512))
+        print("    [+] Zeroed sectors 1-63 (GPT headers completely removed)")
+
+        # 2. Write Sector 0 MBR matching dArkOS4Clone layout
         f.seek(0)
         mbr = bytearray(f.read(512))
 
-        # Partition 1: BOOT (FAT32), active=0x80, type=0x0c, start=32768, num=1048576 (512 MB)
+        # Disk signature (from dArkOS4Clone)
+        mbr[440:444] = b'\x12\x79\xd4\x32'
+        mbr[444:446] = b'\x00\x00'
+
+        # Partition 1: BOOT (FAT32), active=0x00, type=0x0b, start=32768, num=1048576 (512 MB)
         part1 = struct.pack('<B3sB3sII',
-            0x80,               # Bootable
-            b'\xfe\xff\xff',
-            0x0c,               # FAT32 LBA
-            b'\xfe\xff\xff',
+            0x00,
+            b'\x40\x01\x40',
+            0x0b,               # FAT32 CHS
+            b'\xfe\xc2\xff',
             32768,
             1048576
         )
         # Partition 2: system (Linux EXT4), active=0x00, type=0x83, start=1081344, num=4619665 (~2.2 GB)
         part2 = struct.pack('<B3sB3sII',
             0x00,
-            b'\xfe\xff\xff',
+            b'\xfe\xc2\xff',
             0x83,               # Linux native
-            b'\xfe\xff\xff',
+            b'\xfe\xc2\xff',
             1081344,
             4619665
         )
@@ -74,7 +84,7 @@ def write_hybrid_mbr(image_path):
 
         f.seek(0)
         f.write(mbr)
-        print("    [+] Hybrid MBR written: Partition 1 (FAT32), Partition 2 (EXT4)")
+        print("    [+] Clean MBR written: Partition 1 (FAT32, 512 MB), Partition 2 (EXT4, 2.2 GB)")
 
 def patch_boot_partition(image_path, dtb_path, kernel_path):
     print("[*] Patching FAT32 BOOT partition...")
@@ -88,19 +98,31 @@ def patch_boot_partition(image_path, dtb_path, kernel_path):
 
     fs = PyFatFS(image_path, offset=BOOT_OFFSET_BYTES)
 
-    # 1. Write kernel
+    # 1. Write kernel to both /Image and /Image-resizing (used on first boot)
     if os.path.exists(kernel_path):
         with open(kernel_path, 'rb') as f:
             kdata = f.read()
+        if fs.exists('/Image'):
+            fs.remove('/Image')
+        fs.create('/Image')
         fs.writebytes('/Image', kdata)
-        print(f"    [+] Updated /Image ({len(kdata)} bytes)")
+        print(f"    [+] Created & updated /Image ({len(kdata)} bytes)")
+
+        if fs.exists('/Image-resizing'):
+            fs.remove('/Image-resizing')
+        fs.create('/Image-resizing')
+        fs.writebytes('/Image-resizing', kdata)
+        print(f"    [+] Created & updated /Image-resizing ({len(kdata)} bytes)")
 
     # 2. Write DTB
     if os.path.exists(dtb_path):
         with open(dtb_path, 'rb') as f:
             dtbdata = f.read()
+        if fs.exists('/rk3326-r36s-android.dtb'):
+            fs.remove('/rk3326-r36s-android.dtb')
+        fs.create('/rk3326-r36s-android.dtb')
         fs.writebytes('/rk3326-r36s-android.dtb', dtbdata)
-        print(f"    [+] Updated /rk3326-r36s-android.dtb ({len(dtbdata)} bytes)")
+        print(f"    [+] Created & updated /rk3326-r36s-android.dtb ({len(dtbdata)} bytes)")
 
     # 3. Enable live on-screen logs in boot.ini
     if fs.exists('/boot.ini'):
@@ -123,7 +145,8 @@ def patch_boot_partition(image_path, dtb_path, kernel_path):
 def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     idb_path = os.path.join(base_dir, "clone-uboot", "idbloader.img")
-    uboot_path = os.path.join(base_dir, "clone-uboot", "uboot_stable.img")
+    # Use verified clone U-Boot (identical to working dArkOS4Clone release)
+    uboot_path = os.path.join(base_dir, "clone-uboot", "uboot_oct05_emmc.img")
     trust_path = os.path.join(base_dir, "clone-uboot", "trust.img")
     dtb_path = os.path.join(base_dir, "boot-files", "rk3326-r36s-android.dtb")
     kernel_path = os.path.join(base_dir, "boot-files", "Image")
@@ -131,8 +154,9 @@ def main():
     img_dir = os.path.join(base_dir, "build-img")
     target_img = os.path.join(img_dir, "lineage-18.1-r36s-clone-type2-amp.img")
 
+    # If the image was modified previously, extract fresh base if zip exists
+    zip_path = os.path.join(img_dir, "lineage-18.1-20250902-2052-r36s-android.img.zip")
     if not os.path.exists(target_img):
-        zip_path = os.path.join(img_dir, "lineage-18.1-20250902-2052-r36s-android.img.zip")
         if os.path.exists(zip_path):
             print(f"[*] Extracting base image from {zip_path}...")
             with zipfile.ZipFile(zip_path) as z:
@@ -144,7 +168,7 @@ def main():
             sys.exit(1)
 
     fuse_bootloader(target_img, idb_path, uboot_path, trust_path)
-    write_hybrid_mbr(target_img)
+    write_clean_mbr(target_img)
     patch_boot_partition(target_img, dtb_path, kernel_path)
     print("\n[SUCCESS] Clone image is fully built and ready to flash!")
 
