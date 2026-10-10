@@ -1,26 +1,26 @@
 # Lineage4Clones
 
-Port-Projekt: LineageOS 18.1 (andr36oid) auf R36S-Clone-Boards bringen, die bisher keinen Android-Support haben. Ziel-Board als erstes: **R36S-V12 Clone mit 2 RAM-Chips** ([Handhelds Wiki](https://handhelds.wiki/R36S_Clones#2_RAM_Chip_Clone_R36S-V12)).
+Port project: get LineageOS 18.1 (andr36oid) running on R36S clone boards that have no Android support yet. First target board: the **2 RAM Chip Clone R36S-V12** ([Handhelds Wiki](https://handhelds.wiki/R36S_Clones#2_RAM_Chip_Clone_R36S-V12)).
 
-## Warum das gehen sollte
+## Why this should work
 
-- [andr36oid/releases](https://github.com/andr36oid/releases) baut LineageOS 18.1 bereits fuer die R36S-Familie (R36S, R50S, R46H): Kernel, Android-Schicht und Emulatoren existieren.
-- [arkos4clone](https://github.com/lcdyk0517/arkos4clone) und [dArkOSRE](https://github.com/southoz/dArkOSRE-R36) haben fuer Clone-Boards (inkl. V12-Varianten und Panels) funktionierende DTBs und Kerneltreiber auf Linux-Seite erarbeitet.
-- Kernstueck des Ports ist die DTB-Ebene (Display-Panel, RAM, GPIO, WLAN) plus DDR-Init.
+- [andr36oid/releases](https://github.com/andr36oid/releases) already builds LineageOS 18.1 for the R36S family (R36S, R50S, R46H): kernel, Android layer and emulators exist.
+- [arkos4clone](https://github.com/lcdyk0517/arkos4clone) and [dArkOSRE](https://github.com/southoz/dArkOSRE-R36) have already produced working DTBs and kernel drivers for clone boards (including V12 variants and panels) on the Linux side.
+- The core of the port is the DTB layer (display panel, RAM, GPIO, WiFi) plus the DDR init.
 
 ## Plan
 
-1. Board identifizieren: DTB der Stock-Karte durchs [DTB-Tool](https://lcdyk0517.github.io/dtbTools.html), dazu dmesg eines ArkOS-Clone-Boots.
-2. Erster Versuch: andr36oid-Image flashen, BOOT-Partitions-DTBs gegen Clone-Varianten tauschen.
-3. Iterieren: schwarzes Bild = Panel-Timing, kein Boot = RAM-Init.
-4. Läuft es: WLAN, Joystick, Akku einzeln abarbeiten.
+1. Identify the board: run the stock card's DTB through the [DTB tool](https://lcdyk0517.github.io/dtbTools.html), plus save a dmesg from an ArkOS clone boot.
+2. First attempt: flash the andr36oid image, swap the BOOT partition DTBs for clone variants.
+3. Iterate: black screen = panel timing, no boot = RAM init.
+4. Once it boots: work through WiFi, joystick, battery one by one.
 
-## Sicherheit
+## Safety
 
-Das Geraet bootet komplett von der SD-Karte. Es wird nichts am internen Speicher angefasst: Schlimmster Fall ist eine nicht bootende Karte, neu flashen und weiter.
+The device boots entirely from the SD card. Nothing on the internal storage is touched: worst case is a non-booting card, reflash and move on.
 
 ## Status
 
-- [ ] Stock-Karte ausgelesen (DTB identifiziert)
-- [ ] dmesg-Log gesichert
-- [ ] Erster Boot-Versuch mit getauschten DTBs
+- [ ] Stock card read out (DTB identified)
+- [ ] dmesg log captured
+- [ ] First boot attempt with swapped DTBs
