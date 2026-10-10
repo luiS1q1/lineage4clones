@@ -3,12 +3,13 @@
 LineageOS 18.1 (Andr36oid) Disk Image Builder for R36S Clones
 (Clone Type 2 Panel 1 with Amplifier / 2 RAM Chips)
 
-This script automates fusing the clone bootloader and updating the BOOT partition
-with the patched panel 1 DTB and kernel.
+This script automates fusing the clone bootloader, creating a Hybrid MBR,
+and updating the BOOT partition with the patched panel 1 DTB and kernel.
 """
 
 import os
 import sys
+import struct
 import zipfile
 import shutil
 
@@ -39,6 +40,41 @@ def fuse_bootloader(image_path, idb_path, uboot_path, trust_path):
         f.seek(TRUST_SEEK * 512)
         f.write(tr)
         print(f"    [+] Wrote trust.img at sector {TRUST_SEEK} ({len(tr)} bytes)")
+
+def write_hybrid_mbr(image_path):
+    print("[*] Writing Hybrid MBR to sector 0...")
+    with open(image_path, 'r+b') as f:
+        f.seek(0)
+        mbr = bytearray(f.read(512))
+
+        # Partition 1: BOOT (FAT32), active=0x80, type=0x0c, start=32768, num=1048576 (512 MB)
+        part1 = struct.pack('<B3sB3sII',
+            0x80,               # Bootable
+            b'\xfe\xff\xff',
+            0x0c,               # FAT32 LBA
+            b'\xfe\xff\xff',
+            32768,
+            1048576
+        )
+        # Partition 2: system (Linux EXT4), active=0x00, type=0x83, start=1081344, num=4619665 (~2.2 GB)
+        part2 = struct.pack('<B3sB3sII',
+            0x00,
+            b'\xfe\xff\xff',
+            0x83,               # Linux native
+            b'\xfe\xff\xff',
+            1081344,
+            4619665
+        )
+
+        mbr[446:462] = part1
+        mbr[462:478] = part2
+        mbr[478:494] = b'\x00' * 16
+        mbr[494:510] = b'\x00' * 16
+        mbr[510:512] = b'\x55\xaa'
+
+        f.seek(0)
+        f.write(mbr)
+        print("    [+] Hybrid MBR written: Partition 1 (FAT32), Partition 2 (EXT4)")
 
 def patch_boot_partition(image_path, dtb_path, kernel_path):
     print("[*] Patching FAT32 BOOT partition...")
@@ -108,6 +144,7 @@ def main():
             sys.exit(1)
 
     fuse_bootloader(target_img, idb_path, uboot_path, trust_path)
+    write_hybrid_mbr(target_img)
     patch_boot_partition(target_img, dtb_path, kernel_path)
     print("\n[SUCCESS] Clone image is fully built and ready to flash!")
 
