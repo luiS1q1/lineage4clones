@@ -1,0 +1,4 @@
+# Large build artifacts & images
+build-img/
+*.zip
+*.img
