@@ -1,4 +1,7 @@
-# Large build artifacts & images
+# Large build artifacts & images (> 100MB)
 build-img/
 *.zip
 *.img
+
+# Track essential small bootloader binaries
+!clone-uboot/*.img
