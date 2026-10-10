@@ -21,6 +21,7 @@ The device boots entirely from the SD card. Nothing on the internal storage is t
 
 ## Status
 
-- [x] Stock card read out (DTB identified), see docs/board-identification.md
-- [ ] dmesg log captured
-- [ ] First boot attempt with swapped DTBs
+- [x] Stock card read out (DTB identified: Clone Type 2 Panel 1 With Amplifier)
+- [x] ArkOS4Clone test successful (confirmed working hardware match)
+- [x] Boot files prepared (`boot-files/`: patched kernel Image v1.1 + amplifier DTB)
+- [ ] First andr36oid boot test on hardware
