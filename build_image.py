@@ -146,7 +146,9 @@ def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     idb_path = os.path.join(base_dir, "clone-uboot", "idbloader.img")
     # Use verified clone U-Boot (identical to working dArkOS4Clone release)
-    uboot_path = os.path.join(base_dir, "clone-uboot", "uboot_oct05_emmc.img")
+    # DEBUG: uboot_oct05_debug.img prints U-Boot boot log to the screen (stdout=vidconsole0).
+    # Revert to uboot_oct05_emmc.img once the mmc failure is diagnosed.
+    uboot_path = os.path.join(base_dir, "clone-uboot", "uboot_oct05_debug.img")
     trust_path = os.path.join(base_dir, "clone-uboot", "trust.img")
     dtb_path = os.path.join(base_dir, "boot-files", "rk3326-r36s-android.dtb")
     kernel_path = os.path.join(base_dir, "boot-files", "Image")

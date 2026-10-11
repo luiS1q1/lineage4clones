@@ -57,3 +57,34 @@ Outcomes:
 Dump the first 32 MB of the working stock ArkOS4Clone card and compare: if its
 sector-16384 uboot equals ours, the binary is proven good on this exact board
 and the difference is card content (env/boot.ini) or the physical test card.
+
+## Test A result (2026-10-11, ~13:15)
+Boot with the boot.ini bisect lines: **fallback banner appears within ~5 s, the
+sleep 30 line is never reached.** Conclusion: execution never gets to
+`cfgload`/boot.ini. The failure sits at or before `mmc dev 1` (SD init in
+U-Boot proper) or `cfgload` itself failing to open boot.ini on partition 1.
+Kernel Image/DTB and boot.ini content are ruled out for now.
+
+Eliminated so far: charger/battery power (tested with and without), GPT
+remnants (wiped, no change), TEEC "ptable" root cause (retracted, OP-TEE
+strings), kernel Image-resizing first-boot trap (never reached).
+
+## Variant: clone-uboot/uboot_oct05_debug_nouhs.img
+Same as the debug build, plus all four `sd-uhs-*` properties removed from the
+embedded control DTB (NOPed out, size-preserving, forces legacy 3.3 V SD modes
+only). Try this if Test B shows a voltage/signaling error.
+
+## Next-step plan (priority order)
+1. **Test B**: rebuild with `build_image.py` (now defaults to the debug uboot),
+   flash with Rufus, film the boot with a phone camera. Expected: the real
+   U-Boot error line on screen before the banner and the 5 s power-off.
+2. **Test C**: dump the first 32 MB of the WORKING stock ArkOS4Clone card and
+   share it; byte-compare MBR, bootloader sectors (64/16384/24576) and boot.ini
+   against our image. If its sector-16384 uboot differs from ours, fuse that
+   exact binary - it is proven on this board.
+3. **Test D**: any spare microSD (any brand/size) flashed with the same image;
+   separates physical-card effects from content.
+4. Branch by Test B's error line: "Card did not respond to voltage select!" ->
+   try the nouhs variant; "no mmc device at slot 1" -> driver/pinctrl issue,
+   Test C decides the replacement binary anyway.
+5. 15:00 check on andr36oid/releases #110 for K4tyusha1's answer stands.
