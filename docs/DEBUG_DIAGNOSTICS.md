@@ -88,3 +88,9 @@ only). Try this if Test B shows a voltage/signaling error.
    try the nouhs variant; "no mmc device at slot 1" -> driver/pinctrl issue,
    Test C decides the replacement binary anyway.
 5. 15:00 check on andr36oid/releases #110 for K4tyusha1's answer stands.
+
+## 2026-10-12: upstream issue #110 no longer readable
+andr36oid has disabled issues on the andr36oid/releases repo (GitHub API now
+returns 410, issue page 404). The question fo-agent posted on 2026-10-10 can no
+longer be tracked there; the automated #110 checks are stopped. If an answer
+ever lands there, it has to be read manually in a browser.
