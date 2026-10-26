@@ -37,6 +37,9 @@ all hardware pinout / panel / audio / joystick / power parameters for Clone Type
    - use-ext-amplifier
    - /rk817-sound: spk-ctl-gpios = <&gpio3 7 0>, simple-audio-card,hp-det-gpio = <&gpio2 22 1>
 7. Joysticks & Buttons (/odroidgo3-joypad & /pinctrl):
+   - /serial@ff160000: status = "okay" (keeps ttyS2 & pclk_uart2 active for console=ttyS2,115200n8 and ATF)
+   - /fiq-debugger: status = "okay", rockchip,serial-id = <2>, pinctrl-0 = <70> (matches stock 4.19 so fiq-debugger yields cleanly to serial@ff160000)
+   - /pinctrl/uart2-m1/uart2m1-xfer: rockchip,pins = <2 12 2 173> (claims only TX pin GPIO2_PB4, freeing GPIO2_PB6 [pin 14] for R3 thumbstick click sw11!)
    - amux-count = <4>
    - amux-channel-mapping = <2 3 1 0>
    - amux-a-gpios = <&gpio2 16 1> ([91, 16, 1], GPIO2_PC0)
@@ -324,35 +327,31 @@ def build():
     # ---------------------------------------------------------
     # 2g. Joysticks & Action Buttons (/odroidgo3-joypad)
     # ---------------------------------------------------------
-    # Reconfigure FIQ-Debugger to UART5 and disable serial@ff160000
-    # Exactly matching factory firmware (rf3536k3ka.dtb) and ArkOS (arkos_clone_type2.dtb)
-    # This keeps fiq-debugger active (preventing kernel panic) while freeing GPIO2 pin 14 for joypad!
-    try:
-        serial2 = dt419.get_node("/serial@ff160000")
-        set_prop_safe(serial2, fdt.PropStrings("status", "disabled"))
-        print("    [-] Disabled /serial@ff160000 (freed GPIO2 pin 14)")
-    except Exception as e:
-        print("    [!] /serial@ff160000 not found:", e)
+    # Keep /serial@ff160000 (ttyS2) and /fiq-debugger EXACTLY at their stock 4.19 settings
+    # (status="okay", rockchip,serial-id=<2>, pinctrl-0=<70>) so ttyS2 stays alive for
+    # console=ttyS2,115200n8 and ATF without gating pclk_uart2 or hanging on unclocked UART5!
+    # To resolve the GPIO2_PB6 (pin 14) conflict with R3 (sw11), update /pinctrl/uart2-m1/uart2m1-xfer
+    # (phandle 70) to only claim TX pin GPIO2_PB4 (<2 12 2 173>), freeing GPIO2_PB6 (pin 14) for joypad!
+    serial2 = dt419.get_node("/serial@ff160000")
+    set_prop_safe(serial2, fdt.PropStrings("status", "okay"))
+    set_prop_safe(serial2, fdt.PropWords("pinctrl-0", 70))
 
-    try:
-        fiq = dt419.get_node("/fiq-debugger")
-        set_prop_safe(fiq, fdt.PropStrings("status", "okay"))
-        set_prop_safe(fiq, fdt.PropWords("rockchip,serial-id", 5)) # UART5 matching factory DTB
-        set_prop_safe(fiq, fdt.PropWords("pinctrl-0", 77)) # uart5_xfer matching factory DTB
-        print("    [+] Configured /fiq-debugger on UART5 (phandle 77, freed GPIO2 pin 14!)")
-    except Exception as e:
-        print("    [!] /fiq-debugger not found:", e)
+    fiq = dt419.get_node("/fiq-debugger")
+    set_prop_safe(fiq, fdt.PropStrings("status", "okay"))
+    set_prop_safe(fiq, fdt.PropWords("rockchip,serial-id", 2))
+    set_prop_safe(fiq, fdt.PropWords("pinctrl-0", 70))
+
+    uart2m1_xfer = dt419.get_node("/pinctrl/uart2-m1/uart2m1-xfer")
+    set_prop_safe(uart2m1_xfer, fdt.PropWords("rockchip,pins", 2, 12, 2, PHANDLE_PULL_UP))
+    print("    [+] Restored /serial@ff160000 & /fiq-debugger (UART2) and removed GPIO2_14 from uart2m1-xfer!")
 
     joy = dt419.get_node("/odroidgo3-joypad")
-    if joy.get_property("pinctrl-1"):
-        joy.remove_property("pinctrl-1")
-        print("    [-] Removed /odroidgo3-joypad/pinctrl-1")
     set_prop_safe(joy, fdt.PropWords("amux-count", 4))
     set_prop_safe(joy, fdt.PropWords("amux-channel-mapping", 2, 3, 1, 0))
     set_prop_safe(joy, fdt.PropWords("amux-a-gpios", PHANDLE_GPIO2, 16, 1))  # GPIO2_PC0
     set_prop_safe(joy, fdt.PropWords("amux-b-gpios", PHANDLE_GPIO2, 15, 1))  # GPIO2_PB7
     set_prop_safe(joy, fdt.PropWords("amux-en-gpios", PHANDLE_GPIO2, 11, 1)) # GPIO2_PB3
-    print("    [+] Configured /odroidgo3-joypad AMUX (<2 3 1 0>, mux-en on GPIO2_PB3)")
+    print("    [+] Configured /odroidgo3-joypad AMUX (<2 3 1 0>, mux-en on GPIO2_PB3, preserved pinctrl-1)")
 
     # Remove all stock R36S buttons from /odroidgo3-joypad
     old_sw_nodes = [node for node in joy.nodes if node.name.startswith("sw")]
@@ -371,26 +370,26 @@ def build():
         ("sw2",  "GPIO DPAD-DOWN", 108, PHANDLE_GPIO3, 23),  # KEY_DOWN
         ("sw3",  "GPIO DPAD-LEFT", 105, PHANDLE_GPIO3, 20),  # KEY_LEFT
         ("sw4",  "GPIO DPAD-RIGHT",106, PHANDLE_GPIO3, 21),  # KEY_RIGHT
-        ("sw5",  "GPIO BTN-A",     304, PHANDLE_GPIO3, 16),  # BTN_A (Confirm/Enter)
+        ("sw5",  "GPIO KEY BTN-A", 304, PHANDLE_GPIO3, 16),  # BTN_A (Confirm/Enter)
         ("sw6",  "GPIO BTN-B",     305, PHANDLE_GPIO3, 17),  # BTN_B (Back/Cancel)
         ("sw7",  "GPIO BTN-Y",     308, PHANDLE_GPIO3, 19),  # BTN_Y
         ("sw8",  "GPIO BTN-X",     307, PHANDLE_GPIO3, 18),  # BTN_X
-        ("sw11", "BTN_THUMBR",     318, PHANDLE_GPIO2, 14),  # BTN_THUMBR (Right stick click)
-        ("sw12", "BTN_THUMBL",     317, PHANDLE_GPIO2, 13),  # BTN_THUMBL (Left stick click)
-        ("sw13", "GPIO BTN_F",     172, PHANDLE_GPIO3, 10),  # FN button (KEY_HOMEPAGE)
-        ("sw15", "GPIO BTN_TL",    310, PHANDLE_GPIO3, 13),  # L1 (BTN_TL)
-        ("sw16", "GPIO BTN_TR",    311, PHANDLE_GPIO3, 11),  # R1 (BTN_TR)
-        ("sw19", "BTN_SELECT",     314, PHANDLE_GPIO3, 24),  # SELECT (BTN_SELECT)
-        ("sw20", "GPIO BTN_TR2",   313, PHANDLE_GPIO3, 12),  # R2 (BTN_TR2)
-        ("sw21", "GPIO BTN_TL2",   312, PHANDLE_GPIO3, 14),  # L2 (BTN_TL2)
-        ("sw22", "BTN_START",      315, PHANDLE_GPIO3, 25),  # START (BTN_START)
+        ("sw11", "GPIO F3",        318, PHANDLE_GPIO2, 14),  # BTN_THUMBR (Right stick click)
+        ("sw12", "GPIO F4",        317, PHANDLE_GPIO2, 13),  # BTN_THUMBL (Left stick click)
+        ("sw13", "GPIO F5",        172, PHANDLE_GPIO3, 10),  # FN button (KEY_HOMEPAGE)
+        ("sw15", "GPIO TOP-LEFT",  310, PHANDLE_GPIO3, 13),  # L1 (BTN_TL)
+        ("sw16", "GPIO TOP-RIGHT", 311, PHANDLE_GPIO3, 11),  # R1 (BTN_TR)
+        ("sw19", "GPIO F1",        314, PHANDLE_GPIO3, 24),  # SELECT (BTN_SELECT)
+        ("sw20", "GPIO TOP-RIGHT2",313, PHANDLE_GPIO3, 12),  # R2 (BTN_TR2)
+        ("sw21", "GPIO TOP-LEFT2", 312, PHANDLE_GPIO3, 14),  # L2 (BTN_TL2)
+        ("sw22", "GPIO F2",        315, PHANDLE_GPIO3, 25),  # START (BTN_START)
     ]
 
     for name, label, code, gpio_ph, pin in clone_buttons:
         btn_node = fdt.Node(name)
+        btn_node.append(fdt.PropWords("gpios", gpio_ph, pin, 1))  # active-low
         btn_node.append(fdt.PropStrings("label", label))
         btn_node.append(fdt.PropWords("linux,code", code))
-        btn_node.append(fdt.PropWords("gpios", gpio_ph, pin, 1))  # active-low
         joy.append(btn_node)
 
     print(f"    [+] Configured {len(clone_buttons)} Clone Type 2 buttons on /odroidgo3-joypad (GPIO3 & GPIO2)")
@@ -561,10 +560,11 @@ def build():
     assert dt_val.get_node("/dmc").get_property("status").value == "disabled"
     assert dt_val.get_node("/dwmmc@ff370000").get_property("max-frequency").data == [100000000]
 
-    # Verify disabled UART / FIQ
-    assert dt_val.get_node("/serial@ff160000").get_property("status").value == "disabled"
+    # Verify UART2 / FIQ-Debugger & freed GPIO2_14
+    assert dt_val.get_node("/serial@ff160000").get_property("status").value == "okay"
     assert dt_val.get_node("/fiq-debugger").get_property("status").value == "okay"
-    assert dt_val.get_node("/fiq-debugger").get_property("rockchip,serial-id").data == [5]
+    assert dt_val.get_node("/fiq-debugger").get_property("rockchip,serial-id").data == [2]
+    assert dt_val.get_node("/pinctrl/uart2-m1/uart2m1-xfer").get_property("rockchip,pins").data == [2, 12, 2, 173]
 
     # Verify joypad buttons
     val_joy = dt_val.get_node("/odroidgo3-joypad")
@@ -577,7 +577,7 @@ def build():
     assert val_joy.get_subnode("sw6").get_property("gpios").data == [141, 17, 1], "sw6 BTN-B must be GPIO3_PC1"
     assert val_joy.get_subnode("sw11").get_property("gpios").data == [91, 14, 1], "sw11 THUMBR must be GPIO2_PB6"
     assert val_joy.get_subnode("sw12").get_property("gpios").data == [91, 13, 1], "sw12 THUMBL must be GPIO2_PB5"
-    assert val_joy.get_property("pinctrl-1") is None, "pinctrl-1 must be removed from odroidgo3-joypad"
+    assert val_joy.get_property("pinctrl-1").data == [112], "pinctrl-1 must be preserved on odroidgo3-joypad"
     assert val_joy.get_subnode("sw11").get_property("linux,code").data == [318], "sw11 code must be 318"
     assert val_joy.get_subnode("sw12").get_property("linux,code").data == [317], "sw12 code must be 317"
     assert val_joy.get_subnode("sw20").get_property("gpios").data == [141, 12, 1], "sw20 TR2 must be GPIO3_PB4"
