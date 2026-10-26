@@ -21,6 +21,22 @@ Delta-Bisect Modes:
     - boot.ini patched with root=/dev/mmcblk0p2 and live on-screen console
     - Archive attribute 0x20 set on modified files
     Output: build-img/lineage-test-T3.img
+
+  Mode T4:
+    Mode T2 + direct Android boot (skips resizing stage).
+    - ArkOS DTB delays + clone kernel (Image)
+    - boot.ini directly loads Image at 0x02000000 with root=/dev/mmcblk0p2
+    Output: build-img/lineage-test-T4.img
+
+  Mode T5:
+    Pure stock GPT layout + fused clone bootloaders + patched FAT32 with standalone uInitrd & automated GPT fix:
+    - Stock GPT in sectors 1-63 left 100% intact
+    - Patched kernel (Image) + Clone 4.19 DTB (rk3326-r36s-android.dtb)
+    - Standalone uInitrd ramdisk & Image-resizing with automated GPT restoration and early diagnostics
+    - Stock gpt_head.bin (LBA 0..33) copied to /gpt_head.bin
+    - Resizing boot.ini loading Image-resizing at 0x02000000, uInitrd at 0x04000000, DTB at 0x01f00000
+    - Android boot.ini-android for subsequent native Android boots
+    Output: build-img/lineage-test-T5.img
 """
 
 import argparse
@@ -150,16 +166,29 @@ def write_clean_mbr(image_path):
         f.write(mbr)
         print("    [+] Clean MBR written: Partition 1 (FAT32, 512 MB), Partition 2 (EXT4, 2.2 GB)")
 
-def patch_boot_partition(image_path, dtb_path, kernel_path):
+def patch_boot_partition(image_path, dtb_path, kernel_path, direct_boot=False, uinitrd_path=None, resizing_kernel_path=None, gpt_blob_path=None):
     """
     Patches FAT32 BOOT partition cleanly:
-    - Preserves /Image-resizing (25 MB stock first-boot resizer with embedded initramfs)
-    - Preserves stock /boot.ini (boots Image-resizing from ramdisk on first boot)
-    - Writes Clone Type 2 Panel 1 DTB to /rk3326-r36s-android.dtb
-    - Writes AMUX-supported kernel to /Image (used by boot.ini-android after first boot resize)
+    - Mode T3 (direct_boot=False, uinitrd_path=None):
+        Preserves /Image-resizing (25 MB stock first-boot resizer with embedded initramfs)
+        Preserves stock /boot.ini (boots Image-resizing from ramdisk on first boot)
+        Writes Clone Type 2 Panel 1 DTB to /rk3326-r36s-android.dtb
+        Writes AMUX-supported kernel to /Image
+    - Mode T4 (direct_boot=True):
+        Writes Clone Type 2 Panel 1 DTB (with ArkOS uboot delays & enable-gpios) to /rk3326-r36s-android.dtb
+        Writes AMUX-supported kernel (15.7 MB) to /Image
+        Writes direct-boot /boot.ini (loads /Image directly, root=/dev/mmcblk0p2, console=tty0 fbcon)
+    - Mode T5 (uinitrd_path provided):
+        Writes Clone Type 2 Panel 1 DTB to /rk3326-r36s-android.dtb
+        Writes AMUX-supported kernel (15.7 MB) to /Image
+        Writes patched /Image-resizing with automated GPT restoration
+        Writes standalone /uInitrd ramdisk
+        Writes stock /gpt_head.bin (LBA 0..33)
+        Writes resizing /boot.ini loading Image-resizing at 0x02000000, uInitrd at 0x04000000, DTB at 0x01f00000
+        Writes /boot.ini-android for subsequent native Android boots
     - Sets Archive attribute 0x20 on modified entries
     """
-    print(f"[*] Patching FAT32 BOOT partition in: {image_path}...")
+    print(f"[*] Patching FAT32 BOOT partition in: {image_path} (direct_boot={direct_boot}, uinitrd={'YES' if uinitrd_path else 'NO'})...")
     try:
         from pyfatfs.PyFatFS import PyFatFS
     except ImportError:
@@ -169,9 +198,9 @@ def patch_boot_partition(image_path, dtb_path, kernel_path):
         from pyfatfs.PyFatFS import PyFatFS
 
     fs = PyFatFS(image_path, offset=BOOT_OFFSET_BYTES)
+    target_entries = []
 
-    # 1. Write kernel ONLY to /Image (used by boot.ini-android on normal boots)
-    # DO NOT touch /Image-resizing (which contains the 25 MB first-boot resizing ramdisk)!
+    # 1. Write kernel to /Image
     if os.path.exists(kernel_path):
         with open(kernel_path, 'rb') as f:
             kdata = f.read()
@@ -179,14 +208,34 @@ def patch_boot_partition(image_path, dtb_path, kernel_path):
             fs.remove('/Image')
         fs.create('/Image')
         fs.writebytes('/Image', kdata)
+        target_entries.append('Image')
         print(f"    [+] Updated /Image with patched kernel ({len(kdata)} bytes)")
-        if fs.exists('/Image-resizing'):
-            res_entry = fs.fs.root_dir.get_entry('Image-resizing')
-            print(f"    [*] Preserved stock /Image-resizing intact ({res_entry.filesize} bytes)")
     else:
         print(f"    [!] Warning: Kernel binary not found at {kernel_path}")
 
-    # 2. Write Clone Type 2 Panel 1 + Amp DTB
+    # 2. Write Image-resizing if custom provided
+    if resizing_kernel_path and os.path.exists(resizing_kernel_path):
+        with open(resizing_kernel_path, 'rb') as f:
+            res_data = f.read()
+        if fs.exists('/Image-resizing'):
+            fs.remove('/Image-resizing')
+        fs.create('/Image-resizing')
+        fs.writebytes('/Image-resizing', res_data)
+        target_entries.append('Image-resizing')
+        print(f"    [+] Updated /Image-resizing with patched resizer ({len(res_data)} bytes)")
+
+    # 3. Write stock gpt_head.bin if provided
+    if gpt_blob_path and os.path.exists(gpt_blob_path):
+        with open(gpt_blob_path, 'rb') as f:
+            gpt_data = f.read()
+        if fs.exists('/gpt_head.bin'):
+            fs.remove('/gpt_head.bin')
+        fs.create('/gpt_head.bin')
+        fs.writebytes('/gpt_head.bin', gpt_data)
+        target_entries.append('gpt_head.bin')
+        print(f"    [+] Updated /gpt_head.bin with stock GPT blob ({len(gpt_data)} bytes)")
+
+    # 4. Write Clone Type 2 Panel 1 + Amp DTB
     if os.path.exists(dtb_path):
         with open(dtb_path, 'rb') as f:
             dtbdata = f.read()
@@ -194,17 +243,111 @@ def patch_boot_partition(image_path, dtb_path, kernel_path):
             fs.remove('/rk3326-r36s-android.dtb')
         fs.create('/rk3326-r36s-android.dtb')
         fs.writebytes('/rk3326-r36s-android.dtb', dtbdata)
+        target_entries.append('rk3326-r36s-android.dtb')
         print(f"    [+] Updated /rk3326-r36s-android.dtb with Clone Panel 1 DTB ({len(dtbdata)} bytes)")
     else:
         print(f"    [!] Warning: DTB file not found at {dtb_path}")
 
-    # 3. Stock boot.ini and boot.ini-android are left 100% intact:
-    # Stock boot.ini boots Image-resizing from ramdisk without root=/dev/mmcblk0p2.
-    # Stock boot.ini-android already contains root=/dev/mmcblk0p2 for subsequent boots.
-    print("    [*] Preserved stock /boot.ini and /boot.ini-android intact (avoids ramdisk collision)")
+    # 5. Write uInitrd if provided (Mode T5)
+    if uinitrd_path and os.path.exists(uinitrd_path):
+        with open(uinitrd_path, 'rb') as f:
+            uinitrd_data = f.read()
+        if fs.exists('/uInitrd'):
+            fs.remove('/uInitrd')
+        fs.create('/uInitrd')
+        fs.writebytes('/uInitrd', uinitrd_data)
+        target_entries.append('uInitrd')
+        print(f"    [+] Updated /uInitrd with standalone ramdisk ({len(uinitrd_data)} bytes)")
 
-    # 4. Set Archive attribute (0x20) on modified files
-    target_entries = ['Image', 'rk3326-r36s-android.dtb']
+    # 6. Handle boot.ini & boot.ini-android
+    if uinitrd_path:
+        # Mode T5: Resizing boot with standalone uInitrd
+        boot_ini_content = (
+            "odroidgoa-uboot-config\n\n"
+            'setenv bootrootfs "rdinit=/linuxrc fw_devlink=permissive consoleblank=0 swiotlb=1 coherent_pool=1m"\n\n'
+            'setenv console "console=tty0 fbcon=rotate:0 console=ttyS2,115200n8 androidboot.console=tty0"\n\n'
+            'setenv android "firmware_class.path=/vendor/firmware androidboot.hardware=rk30board androidboot.selinux=permissive"\n\n'
+            'setenv android2 "androidboot.revision=${hwrev} androidboot.serialno=${serial#} androidboot.boot_devices=ff370000.dwmmc"\n\n'
+            "# Set load addresses (0x04000000 is safely above 25MB Image-resizing at 0x02000000)\n"
+            'setenv kernel_addr_r "0x02000000"\n'
+            'setenv initrd_addr_r "0x04000000"\n'
+            'setenv fdt_addr_r "0x01f00000"\n\n'
+            "load mmc 1:1 ${kernel_addr_r} Image-resizing\n"
+            "load mmc 1:1 ${initrd_addr_r} uInitrd\n"
+            "load mmc 1:1 ${fdt_addr_r} rk3326-r36s-android.dtb\n\n"
+            'setenv bootargs "${bootrootfs} ${android} ${android2} ${console}"\n\n'
+            'lcdputs "U-BOOT: Starting LineageOS 18.1..."\n'
+            "booti ${kernel_addr_r} ${initrd_addr_r} ${fdt_addr_r}\n"
+        ).encode('ascii')
+
+        boot_ini_android_content = (
+            "odroidgoa-uboot-config\n\n"
+            'setenv bootrootfs "root=/dev/mmcblk0p2 fw_devlink=permissive rootfstype=ext4 rootwait init=/init consoleblank=0 swiotlb=1 coherent_pool=1m"\n\n'
+            'setenv console "console=tty0 fbcon=rotate:0 console=ttyS2,115200n8 androidboot.console=tty0"\n\n'
+            'setenv android "firmware_class.path=/vendor/firmware androidboot.hardware=rk30board androidboot.selinux=permissive"\n\n'
+            'setenv android2 "androidboot.revision=${hwrev} androidboot.serialno=${serial#} androidboot.boot_devices=ff370000.dwmmc"\n\n'
+            "# Set load addresses\n"
+            'setenv kernel_addr_r "0x02000000"\n'
+            'setenv fdt_addr_r "0x01f00000"\n\n'
+            "if gpio input c4\n"
+            "then\n"
+            "    load mmc 1:1 ${kernel_addr_r} Image-recovery\n"
+            "else\n"
+            "    load mmc 1:1 ${kernel_addr_r} Image\n"
+            "fi\n\n"
+            "load mmc 1:1 ${fdt_addr_r} rk3326-r36s-android.dtb\n\n"
+            'setenv bootargs "${bootrootfs} ${android} ${android2} ${console}"\n\n'
+            "booti ${kernel_addr_r} - ${fdt_addr_r}\n"
+        ).encode('ascii')
+
+        if fs.exists('/boot.ini'):
+            fs.remove('/boot.ini')
+        fs.create('/boot.ini')
+        fs.writebytes('/boot.ini', boot_ini_content)
+        target_entries.append('boot.ini')
+        print(f"    [+] Updated /boot.ini for standalone uInitrd resizing boot ({len(boot_ini_content)} bytes)")
+
+        if fs.exists('/boot.ini-android'):
+            fs.remove('/boot.ini-android')
+        fs.create('/boot.ini-android')
+        fs.writebytes('/boot.ini-android', boot_ini_android_content)
+        target_entries.append('boot.ini-android')
+        print(f"    [+] Updated /boot.ini-android for subsequent Android boot ({len(boot_ini_android_content)} bytes)")
+
+        if fs.exists('/boot.ini-resize'):
+            fs.remove('/boot.ini-resize')
+        fs.create('/boot.ini-resize')
+        fs.writebytes('/boot.ini-resize', boot_ini_content)
+        target_entries.append('boot.ini-resize')
+        print(f"    [+] Updated /boot.ini-resize ({len(boot_ini_content)} bytes)")
+    elif direct_boot:
+        # Mode T4: Direct boot to Android
+        boot_ini_content = (
+            "odroidgoa-uboot-config\n\n"
+            'setenv bootrootfs "root=/dev/mmcblk0p2 fw_devlink=permissive rootfstype=ext4 rootwait init=/init consoleblank=0 swiotlb=1 coherent_pool=1m"\n\n'
+            'setenv console "console=tty0 console=ttyS2,115200n8 androidboot.console=tty0"\n\n'
+            'setenv android "firmware_class.path=/vendor/firmware androidboot.hardware=rk30board androidboot.selinux=permissive"\n\n'
+            'setenv android2 "androidboot.revision=${hwrev} androidboot.serialno=${serial#} androidboot.boot_devices=ff370000.dwmmc"\n\n'
+            "# Set load addresses\n"
+            'setenv kernel_addr_r "0x02000000"\n'
+            'setenv fdt_addr_r "0x01f00000"\n\n'
+            "# Load Clone Kernel and Clone DTB\n"
+            "load mmc 1:1 ${kernel_addr_r} Image\n"
+            "load mmc 1:1 ${fdt_addr_r} rk3326-r36s-android.dtb\n\n"
+            'setenv bootargs "${bootrootfs} ${android} ${android2} ${console}"\n\n'
+            "# Boot\n"
+            "booti ${kernel_addr_r} - ${fdt_addr_r}\n"
+        ).encode('ascii')
+        if fs.exists('/boot.ini'):
+            fs.remove('/boot.ini')
+        fs.create('/boot.ini')
+        fs.writebytes('/boot.ini', boot_ini_content)
+        target_entries.append('boot.ini')
+        print(f"    [+] Updated /boot.ini for direct Android boot with console=tty0 ({len(boot_ini_content)} bytes)")
+    else:
+        print("    [*] Preserved stock /boot.ini and /boot.ini-android intact (avoids ramdisk collision)")
+
+    # 7. Set Archive attribute (0x20) on modified files
     for fname in target_entries:
         if fs.exists('/' + fname):
             entry = fs.fs.root_dir.get_entry(fname)
@@ -268,11 +411,11 @@ def verify_image(image_path, mode, expected_uboot_md5=None):
         trust_md5 = hashlib.md5(s_trust).hexdigest()
 
     print("[*] Partition & Layout Verification:")
-    if mode == "T1":
+    if mode in ("T1", "T5"):
         print(f"    - MBR Signature (0x55AA): {'VALID' if has_mbr_sig else 'INVALID'}")
         print(f"    - Primary GPT Header (LBA 1 'EFI PART'): {'PRESENT (Stock GPT intact)' if has_gpt_sig else 'MISSING'}")
         print(f"    - Sectors 1-63 zeroed: {sectors_1_63_zeroed} (Expected: False for pure GPT)")
-    else:  # T2, T3
+    else:  # T2, T3, T4
         print(f"    - MBR Signature (0x55AA): {'VALID' if has_mbr_sig else 'INVALID'}")
         print(f"    - MBR Disk Signature: 0x{disk_sig} (Expected: 0x1279d432)")
         print(f"    - MBR Part 1 Type: {part1_type} (Expected: 0x0b FAT32)")
@@ -291,21 +434,32 @@ def verify_image(image_path, mode, expected_uboot_md5=None):
     print(f"    - Sector 16384..24575 uboot: {uboot_md5} -> {'MATCH [OK]' if uboot_md5 == exp_uboot else 'MISMATCH'}")
     print(f"    - Sector 24576..32767 trust: {trust_md5} -> {'MATCH [OK]' if trust_md5 == exp_trust else 'MISMATCH'}")
 
-    if mode == "T3":
+    if mode in ("T3", "T4", "T5"):
         print("[*] FAT32 BOOT Partition Inspection:")
         try:
             from pyfatfs.PyFatFS import PyFatFS
             fs = PyFatFS(image_path, offset=BOOT_OFFSET_BYTES)
-            for fname in ['Image', 'Image-resizing', 'rk3326-r36s-android.dtb', 'boot.ini']:
+            for fname in ['Image', 'Image-resizing', 'rk3326-r36s-android.dtb', 'uInitrd', 'gpt_head.bin', 'boot.ini', 'boot.ini-android']:
                 if fs.exists('/' + fname):
                     entry = fs.fs.root_dir.get_entry(fname)
-                    print(f"    - /{fname}: size={entry.filesize} bytes, attr={hex(entry.attr)} ({'ARCHIVE 0x20 OK' if entry.attr == 0x20 else 'MISMATCH'})")
+                    print(f"    - /{fname}: size={entry.filesize} bytes, attr={hex(entry.attr)} ({'ARCHIVE 0x20 OK' if entry.attr == 0x20 else 'MISMATCH'})\")")
             if fs.exists('/boot.ini'):
                 bini = fs.readtext('/boot.ini')
                 has_resizing = 'Image-resizing' in bini
-                is_stock_bootrootfs = 'root=/dev/mmcblk0p2' not in bini
-                print(f"    - /boot.ini loads Image-resizing: {'YES [OK]' if has_resizing else 'MISSING'}")
-                print(f"    - /boot.ini preserves stock ramdisk: {'YES [OK]' if is_stock_bootrootfs else 'MODIFIED'}")
+                has_uinitrd = 'uInitrd' in bini
+                has_image = 'load mmc 1:1 ${kernel_addr_r} Image' in bini
+                is_direct = 'root=/dev/mmcblk0p2' in bini
+                has_tty0 = 'console=tty0' in bini
+                if mode == "T5":
+                    print(f"    - /boot.ini loads uInitrd at 0x04000000: {'YES [OK]' if has_uinitrd and '0x04000000' in bini else 'NO'}")
+                    print(f"    - /boot.ini loads Image-resizing at 0x02000000: {'YES [OK]' if has_resizing and '0x02000000' in bini else 'NO'}")
+                elif mode == "T4":
+                    print(f"    - /boot.ini loads Image directly: {'YES [OK]' if has_image else 'NO'}")
+                    print(f"    - /boot.ini root=/dev/mmcblk0p2: {'YES [OK]' if is_direct else 'MISSING'}")
+                    print(f"    - /boot.ini on-screen console (tty0): {'YES [OK]' if has_tty0 else 'MISSING'}")
+                else:
+                    print(f"    - /boot.ini loads Image-resizing: {'YES [OK]' if has_resizing else 'MISSING'}")
+                    print(f"    - /boot.ini preserves stock ramdisk: {'YES [OK]' if not is_direct else 'MODIFIED'}")
             fs.close()
         except Exception as e:
             print(f"    [!] Failed to inspect FAT32 partition: {e}")
@@ -314,7 +468,7 @@ def verify_image(image_path, mode, expected_uboot_md5=None):
 
 def build_mode(mode, base_dir, uboot_override=None):
     """
-    Executes image build for specified mode (T1, T2, or T3).
+    Executes image build for specified mode (T1, T2, T3, T4, or T5).
     """
     img_dir = os.path.join(base_dir, "build-img")
     zip_path = os.path.join(img_dir, "lineage-18.1-20250902-2052-r36s-android.img.zip")
@@ -326,6 +480,9 @@ def build_mode(mode, base_dir, uboot_override=None):
 
     dtb_path = os.path.join(base_dir, "boot-files", "rk3326-r36s-android.dtb")
     kernel_path = os.path.join(base_dir, "boot-files", "Image")
+    uinitrd_path = os.path.join(base_dir, "boot-files", "uInitrd")
+    resizing_kernel_path = os.path.join(base_dir, "boot-files", "Image-resizing")
+    gpt_blob_path = os.path.join(base_dir, "boot-files", "gpt_head.bin")
 
     target_img = os.path.join(img_dir, f"lineage-test-{mode}.img")
 
@@ -336,7 +493,7 @@ def build_mode(mode, base_dir, uboot_override=None):
     # Step 1: Always extract fresh base
     extract_fresh_base(zip_path, target_img)
 
-    # Step 2: Fuse clone bootloaders (All modes T1, T2, T3)
+    # Step 2: Fuse clone bootloaders (All modes T1, T2, T3, T4, T5)
     fuse_bootloader(target_img, idb_path, uboot_path, trust_path)
 
     # Step 3: Mode-specific operations
@@ -346,9 +503,28 @@ def build_mode(mode, base_dir, uboot_override=None):
         print("[*] Mode T2: Writing clean MBR and zeroing sectors 1-63. FAT32 remains stock.")
         write_clean_mbr(target_img)
     elif mode == "T3":
-        print("[*] Mode T3: Writing clean MBR, zeroing sectors 1-63, and patching FAT32.")
+        print("[*] Mode T3: Writing clean MBR, zeroing sectors 1-63, and patching FAT32 (stock resizer boot).")
         write_clean_mbr(target_img)
-        patch_boot_partition(target_img, dtb_path, kernel_path)
+        patch_boot_partition(target_img, dtb_path, kernel_path, direct_boot=False)
+    elif mode == "T4":
+        print("[*] Mode T4: Writing clean MBR, zeroing sectors 1-63, and direct clone boot (Image + ArkOS delays DTB + console=tty0).")
+        write_clean_mbr(target_img)
+        patch_boot_partition(target_img, dtb_path, kernel_path, direct_boot=True)
+    elif mode == "T5":
+        print("[*] Mode T5: Keeping pure stock MBR/GPT layout intact, patching FAT32 with clone kernel, DTB, uInitrd, and resizing boot.ini.")
+        if not os.path.exists(uinitrd_path) or not os.path.exists(gpt_blob_path) or not os.path.exists(resizing_kernel_path):
+            print("[*] Required boot files missing, generating now...")
+            import create_uinitrd
+            create_uinitrd.create_uinitrd()
+        patch_boot_partition(
+            target_img,
+            dtb_path,
+            kernel_path,
+            direct_boot=False,
+            uinitrd_path=uinitrd_path,
+            resizing_kernel_path=resizing_kernel_path,
+            gpt_blob_path=gpt_blob_path,
+        )
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -367,7 +543,7 @@ def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     parser = argparse.ArgumentParser(
-        description="LineageOS 18.1 Image Builder & Stage 2 Delta-Bisect for R36S Clones",
+        description="LineageOS 18.1 Image Builder & Stage 2/3 Delta-Bisect for R36S Clones",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Delta-Bisect Modes:
@@ -380,48 +556,33 @@ Delta-Bisect Modes:
       Fresh base + clone bootloader + clean MBR + zeroed sectors 1-63. FAT32 untouched.
       Output: build-img/lineage-test-T2.img
 
-  T3: Bootloader + Clean MBR + Patched FAT32
-      Mode T2 + patched FAT32 (Kernel Image, DTB, boot.ini with root=/dev/mmcblk0p2, attr 0x20).
+  T3: Bootloader + Clean MBR + Patched FAT32 (Stock Resizer Boot)
+      Mode T2 + patched FAT32 (Clone DTB, Image, stock Image-resizing and stock boot.ini preserved).
       Output: build-img/lineage-test-T3.img
 
-  ALL:
-      Builds all three images (T1, T2, T3) sequentially.
-"""
+  T4: Direct Android Boot (Skip Resizer)
+      Mode T2 + direct Android boot (Clone DTB, Image, root=/dev/mmcblk0p2, console=tty0).
+      Output: build-img/lineage-test-T4.img
+
+  T5: Stock GPT + Standalone uInitrd Resizing + Diagnostic Hook
+      Stock GPT + Clone Bootloaders + Clone 4.19 DTB + Kernel Image + Standalone uInitrd.
+      Automated GPT restoration if MBR detected, heartbeat LED, 10s wait for storage.
+      Output: build-img/lineage-test-T5.img
+        """
     )
     parser.add_argument(
-        "--test", "-t", "--mode", "-m",
-        dest="test_mode",
-        choices=["T1", "T2", "T3", "ALL"],
-        default=None,
-        help="Select Delta-Bisect test mode: T1, T2, T3, or ALL (default: builds T1 with usage instructions)"
+        "--mode",
+        choices=["T1", "T2", "T3", "T4", "T5"],
+        default="T5",
+        help="Delta-bisect mode to build (default: T5)"
     )
     parser.add_argument(
         "--uboot",
-        default=None,
-        help="Optional path to custom uboot image (defaults to clone-uboot/uboot_oct05_emmc.img)"
+        help="Optional path to custom uboot.img binary to fuse instead of default"
     )
 
     args = parser.parse_args()
-
-    if args.test_mode is None:
-        print("=" * 72)
-        print("LineageOS 18.1 Image Builder - Delta-Bisect Stage 2")
-        print("No --test mode specified. Defaulting to Mode T1.")
-        print()
-        print("Usage:")
-        print("  python build_image.py --test T1   -> Build Mode T1 (Stock layout + clone bootloaders)")
-        print("  python build_image.py --test T2   -> Build Mode T2 (T1 + clean MBR & zeroed sectors 1-63)")
-        print("  python build_image.py --test T3   -> Build Mode T3 (T2 + patched FAT32 kernel/DTB/boot.ini)")
-        print("  python build_image.py --test ALL  -> Build all three test images")
-        print("=" * 72 + "\n")
-        modes_to_build = ["T1"]
-    elif args.test_mode.upper() == "ALL":
-        modes_to_build = ["T1", "T2", "T3"]
-    else:
-        modes_to_build = [args.test_mode.upper()]
-
-    for mode in modes_to_build:
-        build_mode(mode, base_dir, uboot_override=args.uboot)
+    build_mode(args.mode, base_dir, uboot_override=args.uboot)
 
 if __name__ == "__main__":
     main()
