@@ -2,9 +2,9 @@
 """
 Extracts the CPIO initramfs from Image-resizing, patches linuxrc with early diagnostics,
 heartbeat LED control (solid steady ON), 10s wait for boot storage, automated GPT restoration,
-and partition resizing, embeds stock gpt_head.bin (LBA 0..33),
-compresses with gzip (level 9), patches Image-resizing built-in initramfs in place,
-and bundles into a standalone U-Boot legacy ramdisk image (uInitrd).
+dual-boot partition restructuring (4GB Android userdata + 10GB dArkOS ROOTFS),
+direct rootfs decompression from EASYROMS (/roms/darkos_rootfs.img.gz),
+verification, and automatic dual-boot boot.ini deployment.
 """
 
 import gzip
@@ -66,216 +66,175 @@ for _ in $(seq 1 100); do
 done
 
 mkdir -p /mnt
+mkdir -p /roms
 if [ -n "$BOOTPART" ]; then
     mount -t vfat "$BOOTPART" /mnt || mount -t auto "$BOOTPART" /mnt
 fi
 
-echo "BOOTED_INITRAMFS disk=$BOOTDISK part=$BOOTPART" > /mnt/ALIVE.TXT
-dmesg > /mnt/dmesg_early.log 2>&1
-cat /proc/partitions > /mnt/partitions_before.log 2>&1
-ls -la /sys/class/graphics/ > /mnt/fb_status.log 2>&1
+echo "DUALBOOT_INSTALLER_START disk=$BOOTDISK part=$BOOTPART" > /mnt/installer.log
+dmesg > /mnt/dmesg_installer_early.log 2>&1
+cat /proc/partitions > /mnt/partitions_installer_before.log 2>&1
 sync
 
 if [ -z "$BOOTDISK" ]; then
-    echo "ERROR: Boot disk not found after 100 iterations (10s)!" >> /mnt/ALIVE.TXT
+    echo "ERROR: Boot disk not found after 100 iterations (10s)!" >> /mnt/installer.log
     sync
     sleep 5
     reboot -f
 fi
 
-# Check for /dev/fb0 up to 30 iterations (3 seconds)
+# Show splash screen on /dev/fb0 if available
 for _ in $(seq 1 30); do
-	[ -e "/dev/fb0" ] && break
-	/bin/busybox sleep 0.1
+    [ -e "/dev/fb0" ] && break
+    /bin/busybox sleep 0.1
+done
+if [ -e "/dev/fb0" ]; then
+    if [ -f "/resizing_480.ppm" ]; then
+        /sbin/busybox-armv8l fbsplash -s /resizing_480.ppm 2>/dev/null || true
+    fi
+    echo "" > /dev/tty0 2>/dev/null || true
+    echo "==========================================" > /dev/tty0 2>/dev/null || true
+    echo "  dArkOS + LineageOS Dual-Boot Installer  " > /dev/tty0 2>/dev/null || true
+    echo "  Please wait... Do NOT turn off device!  " > /dev/tty0 2>/dev/null || true
+    echo "==========================================" > /dev/tty0 2>/dev/null || true
+fi
+
+# Wait for EASYROMS partition (partition 7)
+ROMSPART="${BOOTDISK}p7"
+for _ in $(seq 1 50); do
+    [ -b "$ROMSPART" ] && break
+    mdev -s
+    busybox sleep 0.1
 done
 
-# Check display mode without aborting if missing/empty
-if [ -e "/sys/class/graphics/fb0/modes" ]; then
-    _mode="$(cat /sys/class/graphics/fb0/modes 2>/dev/null)"
-    if [ -n "$_mode" ]; then
-        echo "Setting framebuffer mode to: $_mode"
-        echo "$_mode" > /sys/class/graphics/fb0/mode 2>/dev/null
-    fi
+mount -o ro -t exfat "$ROMSPART" /roms 2>/dev/null || mount -o ro -t auto "$ROMSPART" /roms 2>/dev/null || true
+
+# Check if darkos_rootfs.img.gz exists on EASYROMS
+HAS_ROOTFS_ARCHIVE=0
+if [ -f "/roms/darkos_rootfs.img.gz" ]; then
+    HAS_ROOTFS_ARCHIVE=1
+    echo "Found /roms/darkos_rootfs.img.gz on EASYROMS!" >> /mnt/installer.log
 fi
 
-NOROMS=0
-DEVICE=1
-[ -f /mnt/rk3326-r36s-android.dtb ] && DEVICE=1 && echo "R36S Detected"
-[ -f /mnt/rk3326-r36plus-android.dtb ] && DEVICE=2 && echo "R36Plus Detected"
-[ -f /mnt/rk3326-r50s-android.dtb ] && DEVICE=3 && echo "R50S Detected"
-[ -f /mnt/.noroms ] && NOROMS=1 && echo "Will not create ROMS partition!"
-
-if [ $DEVICE = 1 ]; then
-    cp /resizing_480.ppm /tmp/resizing.ppm
-fi
-
-if [ $DEVICE = 2 ]; then
-    cp /resizing_720.ppm /tmp/resizing.ppm
-fi
-
-if [ $DEVICE = 3 ]; then
-    cp /resizing_854.ppm /tmp/resizing.ppm
-fi
-
-if [ -e "/dev/fb0" ]; then
-    /sbin/busybox-armv8l fbsplash -s /tmp/resizing.ppm 2>/dev/null || true
-fi
-
-busybox sleep 1
-
-# GPT Restoration Phase: Ensure SD card has Stock LineageOS GPT partition table
-NEED_GPT_RESTORE=0
-if parted -s $BOOTDISK print 2>&1 | grep -qi "msdos"; then
-    echo "Detected MBR (msdos) partition table on $BOOTDISK! GPT restoration required." >> /mnt/error.log 2>&1
-    NEED_GPT_RESTORE=1
-fi
-if [ ! -b "${BOOTDISK}p5" ]; then
-    echo "Partition 5 (trust) missing! GPT restoration required." >> /mnt/error.log 2>&1
-    NEED_GPT_RESTORE=1
-fi
-
-if [ "$NEED_GPT_RESTORE" = 1 ]; then
-    echo "Starting automatic GPT restoration..." >> /mnt/error.log 2>&1
-    if [ -f /mnt/gpt_head.bin ]; then
-        cp /mnt/gpt_head.bin /tmp/gpt_head.bin
-    fi
-    sync
-    umount /mnt 2>/dev/null || true
+# If archive is present, ensure partition 8 exists and install
+if [ "$HAS_ROOTFS_ARCHIVE" = 1 ]; then
+    # Unmount /roms during parted operations
+    umount /roms 2>/dev/null || true
     busybox sleep 1
 
-    GPT_SOURCE=""
-    if [ -f /gpt_head.bin ]; then
-        GPT_SOURCE="/gpt_head.bin"
-    elif [ -f /tmp/gpt_head.bin ]; then
-        GPT_SOURCE="/tmp/gpt_head.bin"
-    fi
+    # Check if partition 8 already exists
+    if [ ! -b "${BOOTDISK}p8" ]; then
+        echo "Repartitioning: Resizing userdata to 4GB and creating ROOTFS partition (p8)..." >> /mnt/installer.log
+        echo ">>> Creating Dual-Boot partition table..." > /dev/tty0 2>/dev/null || true
 
-    if [ -n "$GPT_SOURCE" ]; then
-        echo "Writing Stock GPT blob (34 sectors) from $GPT_SOURCE to $BOOTDISK..." >> /tmp/gpt_restore.log 2>&1
-        dd if="$GPT_SOURCE" of="$BOOTDISK" bs=512 count=34 conv=notrunc >> /tmp/gpt_restore.log 2>&1
-        sync
+        # Remove existing partition 6
+        parted -s $BOOTDISK rm 6 >> /mnt/installer.log 2>&1
         busybox sleep 1
 
-        echo "Fixing backup GPT at end of disk..." >> /tmp/gpt_restore.log 2>&1
-        printf "fix\\n" | parted ---pretend-input-tty "$BOOTDISK" print >> /tmp/gpt_restore.log 2>&1
-        sync
+        # Create 4GB userdata partition (5701009s to 14090239s)
+        parted -s $BOOTDISK mkpart userdata f2fs 5701009s 14090239s >> /mnt/installer.log 2>&1
         busybox sleep 1
 
-        partprobe "$BOOTDISK" >> /tmp/gpt_restore.log 2>&1
+        # Create 10.08GB ROOTFS partition (14090240s to 35227638s)
+        parted -s $BOOTDISK mkpart ROOTFS btrfs 14090240s 35227638s >> /mnt/installer.log 2>&1
         busybox sleep 1
+
+        partprobe $BOOTDISK >> /mnt/installer.log 2>&1
         mdev -s
-        busybox sleep 1
-    else
-        echo "ERROR: gpt_head.bin not found!" >> /tmp/gpt_restore.log 2>&1
-    fi
+        busybox sleep 2
 
-    mount -t vfat "$BOOTPART" /mnt || mount -t auto "$BOOTPART" /mnt
-    if [ -f /tmp/gpt_restore.log ]; then
-        cat /tmp/gpt_restore.log >> /mnt/error.log 2>&1
-    fi
-    echo "GPT restoration phase completed." >> /mnt/error.log 2>&1
-    sync
-fi
-
-# fsck system
-if [ -b "${BOOTDISK}p2" ]; then
-    fsck ${BOOTDISK}p2 >> /mnt/error.log 2>&1 || true
-fi
-busybox sleep 1
-
-# Check if userdata partition (p6) already exists
-if [ ! -b "${BOOTDISK}p6" ]; then
-    echo "Creating userdata and EASYROMS partitions..." >> /mnt/error.log 2>&1
-    TOTAL_SECTORS=$(cat /sys/block/$(basename $BOOTDISK)/size 2>/dev/null || echo 0)
-    echo "Total disk sectors: $TOTAL_SECTORS" >> /mnt/error.log 2>&1
-    if [ "$TOTAL_SECTORS" -gt 0 ] && [ "$TOTAL_SECTORS" -lt 40000000 ]; then
-        echo "Disk size ($TOTAL_SECTORS sectors) under 40M sectors, setting NOROMS=1" >> /mnt/error.log 2>&1
-        NOROMS=1
-    fi
-
-    # Ensure backup GPT is fixed
-    printf "fix\\n" | parted ---pretend-input-tty $BOOTDISK print >> /mnt/error.log 2>&1
-
-    if [ "$NOROMS" = 1 ]; then
-        echo "Parted Stage: NOROMS=1" >> /mnt/error.log 2>&1
-        parted -s $BOOTDISK mkpart userdata f2fs 5701009s 100% >> /mnt/error.log 2>&1
-    else
-        echo "Parted Stage: NOROMS=0" >> /mnt/error.log 2>&1
-        parted -s $BOOTDISK mkpart userdata f2fs 5701009s 39255440s >> /mnt/error.log 2>&1
-        parted -s $BOOTDISK mkpart EASYROMS fat32 39255441s 100% >> /mnt/error.log 2>&1
-    fi
-
-    busybox sleep 1
-    sync
-    partprobe $BOOTDISK >> /mnt/error.log 2>&1
-    partprobe >> /mnt/error.log 2>&1
-    mdev -s
-    busybox sleep 1
-    sync
-
-    # Wait up to 5 seconds for p6 to appear
-    for _ in $(seq 1 50); do
-        [ -b "${BOOTDISK}p6" ] && break
-        mdev -s
-        busybox sleep 0.1
-    done
-
-    echo "Formatting userdata (${BOOTDISK}p6 with f2fs)..." >> /mnt/error.log 2>&1
-    mkfs.f2fs ${BOOTDISK}p6 >> /mnt/error.log 2>&1
-
-    if [ "$NOROMS" = 0 ]; then
         for _ in $(seq 1 50); do
-            [ -b "${BOOTDISK}p7" ] && break
+            [ -b "${BOOTDISK}p8" ] && break
             mdev -s
             busybox sleep 0.1
         done
-        echo "Formatting EASYROMS (${BOOTDISK}p7 with exfat)..." >> /mnt/error.log 2>&1
-        mkfs.exfat ${BOOTDISK}p7 -n EASYROMS >> /mnt/error.log 2>&1
+
+        echo "Formatting userdata (${BOOTDISK}p6 with f2fs)..." >> /mnt/installer.log
+        mkfs.f2fs -f "${BOOTDISK}p6" >> /mnt/installer.log 2>&1
+    else
+        echo "Partition 8 (${BOOTDISK}p8) already exists." >> /mnt/installer.log
     fi
-    sync
-    busybox sleep 2
+
+    # Remount EASYROMS to read archive
+    mount -o ro -t exfat "$ROMSPART" /roms 2>/dev/null || mount -o ro -t auto "$ROMSPART" /roms 2>/dev/null || true
+
+    if [ -b "${BOOTDISK}p8" ]; then
+        echo "Decompressing dArkOS ROOTFS to ${BOOTDISK}p8 (takes ~2 minutes)..." >> /mnt/installer.log
+        echo ">>> Installing dArkOS (takes ~2 mins)..." > /dev/tty0 2>/dev/null || true
+        sync
+
+        gunzip -c /roms/darkos_rootfs.img.gz | dd of="${BOOTDISK}p8" bs=4M >> /mnt/installer.log 2>&1
+        sync
+        busybox sleep 1
+
+        # Verify BTRFS superblock at offset 64k
+        dd if="${BOOTDISK}p8" of=/tmp/sb.bin bs=1024 skip=64 count=4 2>/dev/null
+        if grep -q "_BHRfS_M" /tmp/sb.bin; then
+            echo "SUCCESS: dArkOS BTRFS ROOTFS verified on ${BOOTDISK}p8!" >> /mnt/installer.log
+            echo ">>> dArkOS ROOTFS verified successfully!" > /dev/tty0 2>/dev/null || true
+
+            # Cleanup installer archive from EASYROMS
+            umount /roms 2>/dev/null || true
+            busybox sleep 1
+            mount -t exfat "$ROMSPART" /roms 2>/dev/null || mount -t auto "$ROMSPART" /roms 2>/dev/null || true
+            if [ -f "/roms/darkos_rootfs.img.gz" ]; then
+                echo "Removing /roms/darkos_rootfs.img.gz to reclaim space..." >> /mnt/installer.log
+                rm -f /roms/darkos_rootfs.img.gz >> /mnt/installer.log 2>&1
+                sync
+            fi
+            umount /roms 2>/dev/null || true
+        else
+            echo "ERROR: BTRFS superblock verification failed on ${BOOTDISK}p8!" >> /mnt/installer.log
+            echo ">>> ERROR: BTRFS verification failed!" > /dev/tty0 2>/dev/null || true
+        fi
+    else
+        echo "ERROR: Partition 8 (${BOOTDISK}p8) was not found!" >> /mnt/installer.log
+    fi
 else
-    echo "userdata partition (${BOOTDISK}p6) already exists." >> /mnt/error.log 2>&1
+    echo "No /roms/darkos_rootfs.img.gz found on EASYROMS." >> /mnt/installer.log
+    umount /roms 2>/dev/null || true
 fi
 
-# Dump post-resize diagnostics
-cat /proc/partitions > /mnt/partitions_after.log 2>&1
-dmesg > /mnt/dmesg_final.log 2>&1
-sync
-
-echo "Switching to Android Boot" >> /mnt/error.log 2>&1
+# Switch boot.ini to final Dual-Boot configuration
+echo "Switching boot.ini to Dual-Boot configuration..." >> /mnt/installer.log
 if [ -f /mnt/boot.ini ]; then
-    mv /mnt/boot.ini /mnt/boot.ini-resize
+    mv /mnt/boot.ini /mnt/boot.ini-installer
 fi
-if [ -f /mnt/boot.ini-android ]; then
-    cp /mnt/boot.ini-android /mnt/boot.ini
+if [ -f /mnt/boot.ini-dualboot ]; then
+    cp /mnt/boot.ini-dualboot /mnt/boot.ini
+    echo "Copied boot.ini-dualboot to boot.ini" >> /mnt/installer.log
 fi
+
+cat /proc/partitions > /mnt/partitions_installer_after.log 2>&1
+dmesg > /mnt/dmesg_installer_final.log 2>&1
 sync
 
-if [ $DEVICE = 1 ]; then
-    cp /resized_480.ppm /tmp/resized.ppm
-fi
-if [ $DEVICE = 2 ]; then
-    cp /resized_720.ppm /tmp/resized.ppm
-fi
-if [ $DEVICE = 3 ]; then
-    cp /resized_854.ppm /tmp/resized.ppm
-fi
+echo ">>> Installation completed! Rebooting in 3 seconds..." > /dev/tty0 2>/dev/null || true
 
-if [ -e "/dev/fb0" ]; then
-    /sbin/busybox-armv8l fbsplash -s /tmp/resized.ppm 2>/dev/null || true
-fi
+# Signal completion with 5 rapid LED blinks
+for _ in $(seq 1 5); do
+    for led in /sys/class/leds/*; do
+        [ -d "$led" ] || continue
+        echo 0 > "$led/brightness" 2>/dev/null || true
+    done
+    busybox sleep 0.2
+    for led in /sys/class/leds/*; do
+        [ -d "$led" ] || continue
+        echo 255 > "$led/brightness" 2>/dev/null || echo 1 > "$led/brightness" 2>/dev/null || true
+    done
+    busybox sleep 0.2
+done
 
-sync
-busybox sleep 3
+umount /roms 2>/dev/null || true
 umount /mnt 2>/dev/null || true
 umount /proc 2>/dev/null || true
 umount /sys 2>/dev/null || true
+sync
 
 busybox reboot -f 2>/dev/null || reboot -f 2>/dev/null || true
 busybox sleep 2
 echo b > /proc/sysrq-trigger 2>/dev/null || true
-""".replace("\r\n", "\n").encode("utf-8")
+""".replace("\\r\\n", "\\n").encode("utf-8")
 
 
 def build_uimage_header(payload: bytes) -> bytes:
@@ -306,22 +265,20 @@ def build_uimage_header(payload: bytes) -> bytes:
 
 
 def get_base_resizing_image() -> bytes:
-    # Check backup in boot-files first
-    bak_path = os.path.join(BOOT_FILES_DIR, "Image-resizing.bak")
-    if os.path.exists(bak_path):
-        print(f"[*] Reading base Image-resizing from backup: {bak_path}")
-        with open(bak_path, "rb") as f:
+    # 1. From local boot-files
+    local_img = os.path.join(BOOT_FILES_DIR, "Image-resizing.bak")
+    if os.path.exists(local_img):
+        with open(local_img, "rb") as f:
             return f.read()
 
-    # Check E:\Image-resizing
-    if os.path.exists(E_IMG_RESIZING):
-        print(f"[*] Reading base Image-resizing from SD drive: {E_IMG_RESIZING}")
-        with open(E_IMG_RESIZING, "rb") as f:
+    local_img2 = os.path.join(BOOT_FILES_DIR, "Image-resizing")
+    if os.path.exists(local_img2):
+        with open(local_img2, "rb") as f:
             return f.read()
 
-    # Check T1 image
+    # 2. From lineage-test-T1.img
     if os.path.exists(T1_IMG):
-        print(f"[*] Reading base Image-resizing from {T1_IMG} (offset {BOOT_OFFSET_BYTES})...")
+        print(f"[*] Extracting Image-resizing from {T1_IMG} via PyFatFS...")
         fs = PyFatFS(T1_IMG, offset=BOOT_OFFSET_BYTES)
         data = fs.readbytes("/Image-resizing")
         fs.close()
@@ -514,7 +471,7 @@ def create_uinitrd():
             f.write(gpt_blob)
         print(f"    [+] Synchronized gpt_head.bin to {E_GPT_HEAD}")
 
-    print("\n[SUCCESS] Custom uInitrd and Image-resizing ready!")
+    print("\\n[SUCCESS] Custom uInitrd and Image-resizing ready!")
 
 
 if __name__ == "__main__":
