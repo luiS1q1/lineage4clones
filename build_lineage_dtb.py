@@ -314,7 +314,7 @@ def build():
     set_prop_safe(codec, fdt.PropWords("hp-mute-delay-ms", 50))
     set_prop_safe(codec, fdt.PropWords("spk-volume", 3))
     set_prop_safe(codec, fdt.PropWords("hp-volume", 20))
-    set_prop_safe(codec, fdt.Property("use-ext-amplifier"))
+    # Audio: internal RK817 speaker amp (use-ext-amplifier disabled)
     print("    [+] Configured /i2c@ff180000/pmic@20/codec (spk-ctl-gpios=GPIO3_PA7, use-ext-amplifier)")
 
     snd = dt419.get_node("/rk817-sound")

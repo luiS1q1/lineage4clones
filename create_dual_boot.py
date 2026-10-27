@@ -1,0 +1,39 @@
+# Create dual-boot boot.ini
+content = """odroidgoa-uboot-config
+
+# -------------------------------------------------------------
+# Dual-Boot Configuration: ArkOS (Default) & LineageOS 18.1
+# Hold FN button (GPIO C4) on boot to start Android!
+# -------------------------------------------------------------
+
+setenv kernel_addr_r "0x02000000"
+setenv initrd_addr_r "0x01100000"
+setenv fdt_addr_r "0x01f00000"
+
+# Check if FN button (GPIO C4) is pressed for Android
+if gpio input c4
+then
+    setenv bootrootfs "root=/dev/mmcblk0p2 fw_devlink=permissive rootfstype=ext4 rootwait init=/init consoleblank=0 swiotlb=1 coherent_pool=1m"
+    setenv console "console=tty0 fbcon=rotate:0 console=ttyS2,115200n8 androidboot.console=tty0"
+    setenv android "firmware_class.path=/vendor/firmware androidboot.hardware=rk30board androidboot.selinux=permissive"
+    setenv android2 "androidboot.revision=${hwrev} androidboot.serialno=${serial#} androidboot.boot_devices=ff370000.dwmmc"
+    setenv bootargs "${bootrootfs} ${android} ${android2} ${console}"
+    load mmc 1:1 ${kernel_addr_r} Image
+    load mmc 1:1 ${fdt_addr_r} rk3326-r36s-android.dtb
+    booti ${kernel_addr_r} - ${fdt_addr_r}
+else
+    setenv bootargs "root=LABEL=ROOTFS rootwait rw fsck.repair=yes net.ifnames=0 fbcon=rotate:0 console=/dev/ttyFIQ0 quiet splash consoleblank=0 vt.global_cursor_default=0"
+    load mmc 1:1 ${kernel_addr_r} Image-arkos
+    load mmc 1:1 ${initrd_addr_r} uInitrd-arkos
+    load mmc 1:1 ${fdt_addr_r} rk3326-r36s-linux.dtb
+    booti ${kernel_addr_r} ${initrd_addr_r} ${fdt_addr_r}
+fi
+"""
+
+with open("E:/boot.ini", "wb") as f:
+    f.write(content.replace("\r\n", "\n").encode("ascii"))
+
+with open("boot-files/boot.ini-dualboot", "wb") as f:
+    f.write(content.replace("\r\n", "\n").encode("ascii"))
+
+print("Dual-boot boot.ini successfully created and deployed to E:/boot.ini!")
