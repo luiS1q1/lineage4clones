@@ -2,8 +2,7 @@
 
 Custom LineageOS 18.1 (Andr36oid) port and bootloader adaptation for **R36S Clones** (specifically **Clone Type 2 Panel 1 with Amplifier** / 2-RAM-chip boards).
 
-> **Status / Hinweis:** Das Projekt funktioniert im Grunde (Dual-Boot dArkOS & LineageOS 18.1). Da es jedoch verschiedene Hardware-Revisionen bei R36S-Clones gibt, können vereinzelt noch Bugs oder Unregelmäßigkeiten auftreten (z. B. bei Audio-Lautstärkeregelung oder Tastenbelegungen).  
-> *(The project is basically functional, but minor bugs or quirks may still occur depending on clone revisions.)*
+> **Project Status:** The project and dual-boot setup (dArkOS & LineageOS 18.1) are fundamentally functional. However, due to multiple hardware revisions across R36S clone variants, minor bugs or quirks (e.g. audio mixer volume sync or button mappings) may still occur.
 
 ---
 
