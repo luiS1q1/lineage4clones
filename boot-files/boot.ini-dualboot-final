@@ -1,0 +1,18 @@
+odroidgoa-uboot-config
+
+setenv kernel_addr_r "0x02000000"
+setenv initrd_addr_r "0x04000000"
+setenv fdt_addr_r    "0x01f00000"
+
+setenv bootargs_android "root=/dev/mmcblk0p2 fw_devlink=permissive rootfstype=ext4 rootwait init=/init consoleblank=0 swiotlb=1 coherent_pool=1m console=tty0 fbcon=rotate:0 console=ttyS2,115200n8 androidboot.console=tty0 firmware_class.path=/vendor/firmware androidboot.hardware=rk30board androidboot.selinux=permissive"
+
+setenv bootargs_arkos "root=/dev/mmcblk0p8 rootwait rw fsck.repair=yes console=tty0 fbcon=rotate:0 console=ttyS2,115200n8 coherent_pool=1m"
+
+setenv boot_android "lcdputs '[BOOT] Starting LineageOS (Android)...'; setenv bootargs ${bootargs_android}; load mmc 1:1 ${kernel_addr_r} Image; load mmc 1:1 ${fdt_addr_r} rk3326-r36s-android.dtb; booti ${kernel_addr_r} - ${fdt_addr_r}"
+
+setenv boot_arkos "lcdputs '[BOOT] Starting dArkOS (Linux)...'; setenv bootargs ${bootargs_arkos}; load mmc 1:1 ${kernel_addr_r} Image-arkos; load mmc 1:1 ${initrd_addr_r} uInitrd-arkos; load mmc 1:1 ${fdt_addr_r} rk3326-r36s-linux.dtb; booti ${kernel_addr_r} ${initrd_addr_r} ${fdt_addr_r}"
+
+if gpio input b2; then run boot_android; fi
+if gpio input c4; then run boot_android; fi
+
+run boot_arkos

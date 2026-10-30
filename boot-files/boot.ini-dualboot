@@ -2,11 +2,11 @@ odroidgoa-uboot-config
 
 # -------------------------------------------------------------
 # Dual-Boot Configuration: dArkOS (Default) & LineageOS 18.1
-# Hold FN button (GPIO C4) on power-on to boot Android!
+# Hold FN button on power-on to boot Android!
 # -------------------------------------------------------------
 
 setenv kernel_addr_r "0x02000000"
-setenv initrd_addr_r "0x04000000"
+setenv initrd_addr_r "0x01100000"
 setenv fdt_addr_r    "0x01f00000"
 
 # Check if FN button (GPIO C4) is pressed for Android
@@ -28,7 +28,7 @@ else
     echo "=========================================="
     echo " [DUAL-BOOT] Default -> Booting dArkOS    "
     echo "=========================================="
-    setenv bootargs "root=LABEL=ROOTFS rootwait rw fsck.repair=yes net.ifnames=0 fbcon=rotate:0 console=/dev/ttyFIQ0 quiet splash consoleblank=0 vt.global_cursor_default=0"
+    setenv bootargs "root=/dev/mmcblk0p8 rootwait rw fsck.repair=yes net.ifnames=0 fbcon=rotate:0 console=/dev/ttyFIQ0 quiet splash consoleblank=0 vt.global_cursor_default=0"
 
     load mmc 1:1 ${kernel_addr_r} Image-arkos
     load mmc 1:1 ${initrd_addr_r} uInitrd-arkos

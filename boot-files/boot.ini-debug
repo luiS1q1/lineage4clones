@@ -1,0 +1,19 @@
+odroidgoa-uboot-config
+
+setenv bootargs "root=/dev/mmcblk0p8 rootwait rw fsck.repair=yes net.ifnames=0 fbcon=rotate:0 console=/dev/tty0 quiet splash consoleblank=0 vt.global_cursor_default=0"
+
+setenv kernel_addr_r "0x02000000"
+setenv initrd_addr_r "0x04000000"
+setenv fdt_addr_r    "0x01f00000"
+
+lcdputs "[BOOT] Step 1: Loading Kernel..."
+load mmc 1:1 ${kernel_addr_r} Image-arkos
+
+lcdputs "[BOOT] Step 2: Loading Initrd..."
+load mmc 1:1 ${initrd_addr_r} uInitrd-arkos
+
+lcdputs "[BOOT] Step 3: Loading DTB..."
+load mmc 1:1 ${fdt_addr_r} rk3326-r36s-android.dtb
+
+lcdputs "[BOOT] Step 4: Booting Kernel..."
+booti ${kernel_addr_r} ${initrd_addr_r} ${fdt_addr_r}
